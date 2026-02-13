@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Claude Code hook script — estimates token usage per interaction.
+"""Claude Code hook script — tracks exact token usage.
 
 Called on the 'Stop' event via Claude Code hooks.
-Receives JSON on stdin with session_id, cwd, etc.
-Estimates tokens from session JSONL file size delta.
+Reads actual usage data from session JSONL files (assistant message 'usage' field).
 """
 
 import json
@@ -44,32 +43,41 @@ def find_session_file(session_id):
     return None
 
 
-def estimate_tokens(session_id, session_sizes):
-    """Estimate tokens from session file size delta.
+def get_tokens_from_session(session_id, last_counted_line):
+    """Parse actual token usage from assistant messages in session JSONL.
 
-    Uses ~6 bytes per token as a rough heuristic
-    (JSON overhead reduces the effective chars-per-token ratio).
+    Reads only lines after last_counted_line to get delta tokens.
+    Returns (new_tokens, new_last_line).
     """
-    if not session_id:
-        return 1000  # fallback
-
     session_file = find_session_file(session_id)
     if not session_file:
-        return 1000
+        return 0, last_counted_line
+
+    new_tokens = 0
+    current_line = 0
 
     try:
-        current_size = session_file.stat().st_size
+        with open(session_file) as f:
+            for line in f:
+                if current_line <= last_counted_line:
+                    current_line += 1
+                    continue
+                try:
+                    d = json.loads(line)
+                    if d.get("type") == "assistant":
+                        usage = d.get("message", {}).get("usage", {})
+                        if usage:
+                            new_tokens += usage.get("input_tokens", 0)
+                            new_tokens += usage.get("output_tokens", 0)
+                            new_tokens += usage.get("cache_creation_input_tokens", 0)
+                            new_tokens += usage.get("cache_read_input_tokens", 0)
+                except (json.JSONDecodeError, KeyError):
+                    pass
+                current_line += 1
     except OSError:
-        return 1000
+        return 0, last_counted_line
 
-    previous_size = session_sizes.get(session_id, 0)
-    delta = max(0, current_size - previous_size)
-
-    # Store new size
-    session_sizes[session_id] = current_size
-
-    # ~6 bytes per token (accounts for JSON structure overhead)
-    return max(100, delta // 6)
+    return new_tokens, current_line - 1
 
 
 def main():
@@ -92,7 +100,7 @@ def main():
             "tokensUsed": 0,
             "interactionCount": 0,
         },
-        "sessionSizes": {},
+        "sessionLines": {},
     })
 
     # Check if window expired → auto-reset
@@ -109,17 +117,20 @@ def main():
                 "tokensUsed": 0,
                 "interactionCount": 0,
             },
-            "sessionSizes": {},
+            "sessionLines": {},
         }
 
-    session_sizes = usage.get("sessionSizes", {})
-    estimated = estimate_tokens(session_id, session_sizes)
+    session_lines = usage.get("sessionLines", {})
+    last_line = session_lines.get(session_id, -1)
+
+    new_tokens, new_last_line = get_tokens_from_session(session_id, last_line)
+    session_lines[session_id] = new_last_line
 
     window = usage["currentWindow"]
-    window["tokensUsed"] = window.get("tokensUsed", 0) + estimated
+    window["tokensUsed"] = window.get("tokensUsed", 0) + new_tokens
     window["interactionCount"] = window.get("interactionCount", 0) + 1
     usage["currentWindow"] = window
-    usage["sessionSizes"] = session_sizes
+    usage["sessionLines"] = session_lines
 
     save_json(USAGE_FILE, usage)
 

@@ -58,7 +58,7 @@ fi
 SWIFTBAR_DIR=$(defaults read com.ameba.SwiftBar PluginDirectory 2>/dev/null || echo "")
 if [ -n "$SWIFTBAR_DIR" ]; then
     SWIFTBAR_DIR=$(eval echo "$SWIFTBAR_DIR")
-    rm -f "$SWIFTBAR_DIR/claude-tokens.30s.py"
+    rm -f "$SWIFTBAR_DIR/claude-tokens.5s.py"
     echo "  ✅ SwiftBar plugin removed"
 fi
 

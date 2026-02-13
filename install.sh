@@ -40,10 +40,10 @@ mkdir -p "$DASHBOARD_DIR"
 echo "  ✅ Dashboard directory: $DASHBOARD_DIR"
 
 # ── 4. Copy scripts ──
-cp "$SCRIPT_DIR/claude-tokens.30s.py" "$DASHBOARD_DIR/"
+cp "$SCRIPT_DIR/claude-tokens.5s.py" "$DASHBOARD_DIR/"
 cp "$SCRIPT_DIR/track-usage.py" "$DASHBOARD_DIR/"
 cp "$SCRIPT_DIR/reset-usage.py" "$DASHBOARD_DIR/"
-chmod +x "$DASHBOARD_DIR/claude-tokens.30s.py"
+chmod +x "$DASHBOARD_DIR/claude-tokens.5s.py"
 chmod +x "$DASHBOARD_DIR/track-usage.py"
 chmod +x "$DASHBOARD_DIR/reset-usage.py"
 echo "  ✅ Scripts copied"

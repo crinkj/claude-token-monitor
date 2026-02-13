@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 
 # <xbar.title>Claude Code Token Monitor</xbar.title>
-# <xbar.version>v1.0</xbar.version>
+# <xbar.version>v2.0</xbar.version>
 # <xbar.desc>Shows Claude Code token usage and reset countdown in the macOS menu bar</xbar.desc>
 # <xbar.dependencies>python3</xbar.dependencies>
 # <xbar.var>string(CONFIG_PATH=~/.claude/dashboard/config.json): Path to config file</xbar.var>
 
 import json
-import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -45,6 +44,36 @@ def make_progress_bar(pct, width=20):
     return "\u2588" * filled + "\u2591" * empty
 
 
+def format_countdown(td):
+    """Format timedelta as Xh XXm XXs."""
+    total = int(td.total_seconds())
+    if total < 0:
+        return "0s"
+    h = total // 3600
+    m = (total % 3600) // 60
+    s = total % 60
+    if h > 0:
+        return f"{h}h {m:02d}m {s:02d}s"
+    elif m > 0:
+        return f"{m}m {s:02d}s"
+    return f"{s}s"
+
+
+def format_countdown_short(td):
+    """Short format for menu bar."""
+    total = int(td.total_seconds())
+    if total < 0:
+        return "0s"
+    h = total // 3600
+    m = (total % 3600) // 60
+    s = total % 60
+    if h > 0:
+        return f"{h}h{m:02d}m{s:02d}s"
+    elif m > 0:
+        return f"{m}m{s:02d}s"
+    return f"{s}s"
+
+
 def main():
     config = load_json(CONFIG_FILE, {
         "tokenLimit": 45000,
@@ -57,7 +86,7 @@ def main():
             "tokensUsed": 0,
             "interactionCount": 0,
         },
-        "sessionSizes": {},
+        "sessionLines": {},
     })
 
     window = usage.get("currentWindow", {})
@@ -75,7 +104,7 @@ def main():
                 "tokensUsed": 0,
                 "interactionCount": 0,
             },
-            "sessionSizes": {},
+            "sessionLines": {},
         }
         save_json(USAGE_FILE, usage)
         window = usage["currentWindow"]
@@ -90,8 +119,6 @@ def main():
     remaining_time = reset_time - now
     if remaining_time.total_seconds() < 0:
         remaining_time = timedelta(0)
-    hours = int(remaining_time.total_seconds() // 3600)
-    minutes = int((remaining_time.total_seconds() % 3600) // 60)
 
     pct = (tokens_used / token_limit * 100) if token_limit > 0 else 0
 
@@ -108,9 +135,11 @@ def main():
 
     used_fmt = format_tokens(tokens_used)
     total_fmt = format_tokens(token_limit)
+    countdown_short = format_countdown_short(remaining_time)
+    countdown_long = format_countdown(remaining_time)
 
     # ── Menu Bar ──
-    print(f"{icon} {used_fmt}/{total_fmt} \u00b7 \u23f1 {hours}h{minutes:02d}m | size=13")
+    print(f"{icon} {used_fmt}/{total_fmt} \u00b7 \u23f1 {countdown_short} | size=13")
 
     # ── Dropdown ──
     print("---")
@@ -119,17 +148,17 @@ def main():
 
     # Progress bar
     bar = make_progress_bar(pct)
-    print(f"{bar} {pct:.0f}% | font=Menlo size=11")
+    print(f"{bar} {pct:.1f}% | font=Menlo size=11")
     print("---")
 
-    print(f"Used:        {tokens_used:>10,} tokens | font=Menlo size=12")
-    print(f"Remaining:   {remaining_tokens:>10,} tokens | font=Menlo size=12 color={color}")
-    print(f"Limit:       {token_limit:>10,} tokens | font=Menlo size=12")
-    print(f"Interactions:{interactions:>10} | font=Menlo size=12")
+    print(f"Used:        {tokens_used:>12,} tokens | font=Menlo size=12")
+    print(f"Remaining:   {remaining_tokens:>12,} tokens | font=Menlo size=12 color={color}")
+    print(f"Limit:       {token_limit:>12,} tokens | font=Menlo size=12")
+    print(f"Interactions:{interactions:>12} | font=Menlo size=12")
     print("---")
 
-    print(f"\u23f1  Reset in {hours}h {minutes:02d}m | color=#66CCFF")
-    print(f"   Window: {start.strftime('%H:%M')} ~ {reset_time.strftime('%H:%M')} | size=11 color=#888888")
+    print(f"\u23f1  Reset in {countdown_long} | color=#66CCFF")
+    print(f"   Window: {start.strftime('%H:%M:%S')} ~ {reset_time.strftime('%H:%M:%S')} | size=11 color=#888888")
     print("---")
 
     # Action buttons
