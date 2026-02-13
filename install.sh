@@ -2,10 +2,31 @@
 set -e
 
 # ─── Claude Code Token Monitor v3 ─── Installer ───
+#
+# Usage:
+#   curl install:  curl -fsSL https://raw.githubusercontent.com/crinkj/claude-token-monitor/main/install.sh | bash
+#   with plan:     curl -fsSL ... | bash -s -- --plan pro
+#   local install: ./install.sh
+#   local + plan:  ./install.sh --plan max_5x
 
+REPO_RAW="https://raw.githubusercontent.com/crinkj/claude-token-monitor/main"
 DASHBOARD_DIR="$HOME/.claude/dashboard"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SETTINGS_FILE="$HOME/.claude/settings.json"
+SCRIPT_DIR="$(cd "$(dirname "$0" 2>/dev/null)" 2>/dev/null && pwd 2>/dev/null || echo "")"
+FILES="claude-tokens.1s.py track-usage.py reset-usage.py scan-sessions.py"
+
+PLAN=""
+
+# ── Parse arguments ──
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --plan|-p) PLAN="$2"; shift 2 ;;
+        pro)       PLAN="pro"; shift ;;
+        max_5x)    PLAN="max_5x"; shift ;;
+        max_20x)   PLAN="max_20x"; shift ;;
+        *)         shift ;;
+    esac
+done
 
 echo ""
 echo "  ⚡ Claude Code Token Monitor — Installer"
@@ -23,48 +44,67 @@ echo "  ✅ python3 found"
 if ! [ -d "/Applications/SwiftBar.app" ]; then
     echo ""
     echo "  SwiftBar is not installed."
-    read -p "  Install SwiftBar via Homebrew? (y/n) " -n 1 -r
-    echo ""
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        brew install --cask swiftbar
-        echo "  ✅ SwiftBar installed"
+    if command -v brew &>/dev/null; then
+        read -p "  Install SwiftBar via Homebrew? (y/n) " -n 1 -r < /dev/tty
+        echo ""
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            brew install --cask swiftbar
+            echo "  ✅ SwiftBar installed"
+        else
+            echo "  ⚠️  Install SwiftBar manually: brew install --cask swiftbar"
+        fi
     else
-        echo "  ⚠️  Skipping SwiftBar install. You'll need to install it manually."
+        echo "  ⚠️  Install SwiftBar manually: https://github.com/swiftbar/SwiftBar"
     fi
 else
     echo "  ✅ SwiftBar found"
 fi
 
 # ── 3. Select plan ──
-echo ""
-echo "  Select your Claude plan:"
-echo ""
-echo "    1) Pro"
-echo "    2) Max 5x"
-echo "    3) Max 20x"
-echo ""
-read -p "  Enter choice (1-3): " plan_choice
+if [ -z "$PLAN" ]; then
+    echo ""
+    echo "  Select your Claude plan:"
+    echo ""
+    echo "    1) Pro"
+    echo "    2) Max 5x"
+    echo "    3) Max 20x"
+    echo ""
+    read -p "  Enter choice (1-3): " plan_choice < /dev/tty
 
-case $plan_choice in
-    2) PLAN="max_5x" ; PLAN_NAME="Max 5x" ;;
-    3) PLAN="max_20x" ; PLAN_NAME="Max 20x" ;;
-    *) PLAN="pro" ; PLAN_NAME="Pro" ;;
+    case $plan_choice in
+        2) PLAN="max_5x" ;;
+        3) PLAN="max_20x" ;;
+        *) PLAN="pro" ;;
+    esac
+fi
+
+case $PLAN in
+    max_5x)  PLAN_NAME="Max 5x" ;;
+    max_20x) PLAN_NAME="Max 20x" ;;
+    *)       PLAN="pro"; PLAN_NAME="Pro" ;;
 esac
 echo "  ✅ Plan: $PLAN_NAME"
 
 # ── 4. Create dashboard directory ──
 mkdir -p "$DASHBOARD_DIR"
 
-# ── 5. Copy scripts ──
-cp "$SCRIPT_DIR/claude-tokens.1s.py" "$DASHBOARD_DIR/"
-cp "$SCRIPT_DIR/track-usage.py" "$DASHBOARD_DIR/"
-cp "$SCRIPT_DIR/reset-usage.py" "$DASHBOARD_DIR/"
-cp "$SCRIPT_DIR/scan-sessions.py" "$DASHBOARD_DIR/"
-chmod +x "$DASHBOARD_DIR/claude-tokens.1s.py"
-chmod +x "$DASHBOARD_DIR/track-usage.py"
-chmod +x "$DASHBOARD_DIR/reset-usage.py"
-chmod +x "$DASHBOARD_DIR/scan-sessions.py"
-echo "  ✅ Scripts copied"
+# ── 5. Download or copy scripts ──
+is_local() {
+    [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/claude-tokens.1s.py" ]
+}
+
+if is_local; then
+    for f in $FILES; do
+        cp "$SCRIPT_DIR/$f" "$DASHBOARD_DIR/"
+    done
+    echo "  ✅ Scripts copied (local)"
+else
+    for f in $FILES; do
+        curl -fsSL "$REPO_RAW/$f" -o "$DASHBOARD_DIR/$f"
+    done
+    echo "  ✅ Scripts downloaded (GitHub)"
+fi
+chmod +x "$DASHBOARD_DIR"/*.py
 
 # ── 6. Create config ──
 cat > "$DASHBOARD_DIR/config.json" << EOF
@@ -146,6 +186,7 @@ else
     if [ "$SWIFTBAR_DIR" != "$DASHBOARD_DIR" ]; then
         rm -f "$SWIFTBAR_DIR/claude-tokens.30s.py"
         rm -f "$SWIFTBAR_DIR/claude-tokens.5s.py"
+        rm -f "$SWIFTBAR_DIR/claude-tokens.1s.py"
         ln -sf "$DASHBOARD_DIR/claude-tokens.1s.py" "$SWIFTBAR_DIR/claude-tokens.1s.py"
         echo "  ✅ Plugin linked to SwiftBar: $SWIFTBAR_DIR"
     else
@@ -153,14 +194,18 @@ else
     fi
 fi
 
+# ── 10. Start SwiftBar ──
+if [ -d "/Applications/SwiftBar.app" ]; then
+    killall SwiftBar 2>/dev/null || true
+    sleep 1
+    open -a SwiftBar
+    echo "  ✅ SwiftBar started"
+fi
+
 # ── Done ──
 echo ""
 echo "  ──────────────────────────────────────────"
 echo "  ✅ Installation complete!"
-echo ""
-echo "  Next steps:"
-echo "  1. Open SwiftBar (or restart it)"
-echo "  2. Token usage will be tracked automatically"
 echo ""
 echo "  Config: $DASHBOARD_DIR/config.json"
 echo "  Adjust tokenLimit or windowHours if needed."
