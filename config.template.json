@@ -1,5 +1,3 @@
 {
-  "tokenLimit": 45000,
-  "resetIntervalHours": 5,
   "plan": "pro"
 }

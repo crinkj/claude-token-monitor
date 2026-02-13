@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
-"""Claude Code hook script — tracks exact token usage.
+"""Claude Code hook — appends exact token usage to a rolling log.
 
-Called on the 'Stop' event via Claude Code hooks.
-Reads actual usage data from session JSONL files (assistant message 'usage' field).
+Called on the 'Stop' event.  Reads the session JSONL to extract real
+usage numbers from every new assistant message since the last invocation.
 """
 
 import json
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 DASHBOARD_DIR = Path.home() / ".claude" / "dashboard"
 CONFIG_FILE = DASHBOARD_DIR / "config.json"
 USAGE_FILE = DASHBOARD_DIR / "usage.json"
+
+PLAN_PRESETS = {
+    "pro": {"windowHours": 5},
+    "max_5x": {"windowHours": 5},
+    "max_20x": {"windowHours": 5},
+}
 
 
 def load_json(path, default):
@@ -30,7 +36,6 @@ def save_json(path, data):
 
 
 def find_session_file(session_id):
-    """Find the session JSONL file across all project directories."""
     projects_dir = Path.home() / ".claude" / "projects"
     if not projects_dir.exists():
         return None
@@ -43,96 +48,98 @@ def find_session_file(session_id):
     return None
 
 
-def get_tokens_from_session(session_id, last_counted_line):
-    """Parse actual token usage from assistant messages in session JSONL.
-
-    Reads only lines after last_counted_line to get delta tokens.
-    Returns (new_tokens, new_last_line).
-    """
+def parse_new_messages(session_id, last_line):
+    """Read new assistant messages and return list of {timestamp, tokens}."""
     session_file = find_session_file(session_id)
     if not session_file:
-        return 0, last_counted_line
+        return [], last_line
 
-    new_tokens = 0
+    entries = []
     current_line = 0
 
     try:
         with open(session_file) as f:
             for line in f:
-                if current_line <= last_counted_line:
+                if current_line <= last_line:
                     current_line += 1
                     continue
                 try:
                     d = json.loads(line)
                     if d.get("type") == "assistant":
-                        usage = d.get("message", {}).get("usage", {})
-                        if usage:
-                            new_tokens += usage.get("input_tokens", 0)
-                            new_tokens += usage.get("output_tokens", 0)
-                            new_tokens += usage.get("cache_creation_input_tokens", 0)
-                            new_tokens += usage.get("cache_read_input_tokens", 0)
+                        msg = d.get("message", {})
+                        usage = msg.get("usage", {})
+                        ts_str = d.get("timestamp")
+                        if usage and ts_str:
+                            # Convert UTC 'Z' timestamps to local
+                            if ts_str.endswith("Z"):
+                                ts_local = datetime.fromisoformat(
+                                    ts_str.replace("Z", "+00:00")
+                                ).astimezone().replace(tzinfo=None)
+                                ts_iso = ts_local.isoformat()
+                            else:
+                                ts_iso = ts_str
+                            # Count input + output + cache_creation
+                            # (cache_read is near-free and likely not rate-limited)
+                            tokens = (
+                                usage.get("input_tokens", 0)
+                                + usage.get("output_tokens", 0)
+                                + usage.get("cache_creation_input_tokens", 0)
+                            )
+                            if tokens > 0:
+                                entries.append({
+                                    "timestamp": ts_iso,
+                                    "tokens": tokens,
+                                })
                 except (json.JSONDecodeError, KeyError):
                     pass
                 current_line += 1
     except OSError:
-        return 0, last_counted_line
+        return [], last_line
 
-    return new_tokens, current_line - 1
+    return entries, current_line - 1
+
+
+def cleanup_old_entries(token_log, window_hours):
+    """Remove entries older than 2× the window to keep the file small."""
+    cutoff = datetime.now() - timedelta(hours=window_hours * 2)
+    return [
+        e for e in token_log
+        if datetime.fromisoformat(e["timestamp"]) > cutoff
+    ]
 
 
 def main():
-    # Read hook input from stdin
     try:
         hook_input = json.load(sys.stdin)
     except (json.JSONDecodeError, EOFError):
         hook_input = {}
 
     session_id = hook_input.get("session_id", "")
+    if not session_id:
+        return
 
-    config = load_json(CONFIG_FILE, {
-        "tokenLimit": 45000,
-        "resetIntervalHours": 5,
-    })
+    config = load_json(CONFIG_FILE, {"plan": "pro"})
+    usage = load_json(USAGE_FILE, {"tokenLog": [], "sessionLines": {}})
 
-    usage = load_json(USAGE_FILE, {
-        "currentWindow": {
-            "startTime": datetime.now().isoformat(),
-            "tokensUsed": 0,
-            "interactionCount": 0,
-        },
-        "sessionLines": {},
-    })
-
-    # Check if window expired → auto-reset
-    window = usage.get("currentWindow", {})
-    start = datetime.fromisoformat(
-        window.get("startTime", datetime.now().isoformat())
-    )
-    reset_hours = config.get("resetIntervalHours", 5)
-
-    if datetime.now() > start + timedelta(hours=reset_hours):
-        usage = {
-            "currentWindow": {
-                "startTime": datetime.now().isoformat(),
-                "tokensUsed": 0,
-                "interactionCount": 0,
-            },
-            "sessionLines": {},
-        }
+    plan_key = config.get("plan", "pro")
+    preset = PLAN_PRESETS.get(plan_key, PLAN_PRESETS["pro"])
+    window_hours = config.get("windowHours", preset["windowHours"])
 
     session_lines = usage.get("sessionLines", {})
     last_line = session_lines.get(session_id, -1)
 
-    new_tokens, new_last_line = get_tokens_from_session(session_id, last_line)
-    session_lines[session_id] = new_last_line
+    new_entries, new_last_line = parse_new_messages(session_id, last_line)
 
-    window = usage["currentWindow"]
-    window["tokensUsed"] = window.get("tokensUsed", 0) + new_tokens
-    window["interactionCount"] = window.get("interactionCount", 0) + 1
-    usage["currentWindow"] = window
-    usage["sessionLines"] = session_lines
+    if new_entries or new_last_line != last_line:
+        session_lines[session_id] = new_last_line
 
-    save_json(USAGE_FILE, usage)
+        token_log = usage.get("tokenLog", [])
+        token_log.extend(new_entries)
+        token_log = cleanup_old_entries(token_log, window_hours)
+
+        usage["tokenLog"] = token_log
+        usage["sessionLines"] = session_lines
+        save_json(USAGE_FILE, usage)
 
 
 if __name__ == "__main__":

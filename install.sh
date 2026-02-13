@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-# ─── Claude Code Token Monitor ─── Installer ───
+# ─── Claude Code Token Monitor v3 ─── Installer ───
 
 DASHBOARD_DIR="$HOME/.claude/dashboard"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -35,47 +35,51 @@ else
     echo "  ✅ SwiftBar found"
 fi
 
-# ── 3. Create dashboard directory ──
-mkdir -p "$DASHBOARD_DIR"
-echo "  ✅ Dashboard directory: $DASHBOARD_DIR"
+# ── 3. Select plan ──
+echo ""
+echo "  Select your Claude plan:"
+echo ""
+echo "    1) Pro"
+echo "    2) Max 5x"
+echo "    3) Max 20x"
+echo ""
+read -p "  Enter choice (1-3): " plan_choice
 
-# ── 4. Copy scripts ──
-cp "$SCRIPT_DIR/claude-tokens.5s.py" "$DASHBOARD_DIR/"
+case $plan_choice in
+    2) PLAN="max_5x" ; PLAN_NAME="Max 5x" ;;
+    3) PLAN="max_20x" ; PLAN_NAME="Max 20x" ;;
+    *) PLAN="pro" ; PLAN_NAME="Pro" ;;
+esac
+echo "  ✅ Plan: $PLAN_NAME"
+
+# ── 4. Create dashboard directory ──
+mkdir -p "$DASHBOARD_DIR"
+
+# ── 5. Copy scripts ──
+cp "$SCRIPT_DIR/claude-tokens.1s.py" "$DASHBOARD_DIR/"
 cp "$SCRIPT_DIR/track-usage.py" "$DASHBOARD_DIR/"
 cp "$SCRIPT_DIR/reset-usage.py" "$DASHBOARD_DIR/"
-chmod +x "$DASHBOARD_DIR/claude-tokens.5s.py"
+cp "$SCRIPT_DIR/scan-sessions.py" "$DASHBOARD_DIR/"
+chmod +x "$DASHBOARD_DIR/claude-tokens.1s.py"
 chmod +x "$DASHBOARD_DIR/track-usage.py"
 chmod +x "$DASHBOARD_DIR/reset-usage.py"
+chmod +x "$DASHBOARD_DIR/scan-sessions.py"
 echo "  ✅ Scripts copied"
 
-# ── 5. Create config (if not exists) ──
-if [ ! -f "$DASHBOARD_DIR/config.json" ]; then
-    cp "$SCRIPT_DIR/config.template.json" "$DASHBOARD_DIR/config.json"
-    echo "  ✅ Config created: $DASHBOARD_DIR/config.json"
-else
-    echo "  ✅ Config already exists (kept)"
-fi
-
-# ── 6. Initialize usage.json (if not exists) ──
-if [ ! -f "$DASHBOARD_DIR/usage.json" ]; then
-    python3 -c "
-import json
-from datetime import datetime
-data = {
-    'currentWindow': {
-        'startTime': datetime.now().isoformat(),
-        'tokensUsed': 0,
-        'interactionCount': 0
-    },
-    'sessionSizes': {}
+# ── 6. Create config ──
+cat > "$DASHBOARD_DIR/config.json" << EOF
+{
+  "plan": "$PLAN"
 }
-with open('$DASHBOARD_DIR/usage.json', 'w') as f:
-    json.dump(data, f, indent=2)
-"
-    echo "  ✅ Usage tracker initialized"
-fi
+EOF
+echo "  ✅ Config created (plan: $PLAN_NAME)"
 
-# ── 7. Set up Claude Code hooks ──
+# ── 7. Scan existing sessions ──
+echo ""
+python3 "$DASHBOARD_DIR/scan-sessions.py"
+echo "  ✅ Existing usage imported"
+
+# ── 8. Set up Claude Code hooks ──
 echo ""
 echo "  Setting up Claude Code hooks..."
 
@@ -98,7 +102,6 @@ except (FileNotFoundError, json.JSONDecodeError):
 
 hook_command = f"python3 {dashboard_dir}/track-usage.py"
 
-# Check if hook already exists
 hooks = settings.get("hooks", {})
 stop_hooks = hooks.get("Stop", [])
 
@@ -126,27 +129,27 @@ else:
     print("  ✅ Hook already registered")
 PYEOF
 
-# ── 8. Link SwiftBar plugin ──
+# ── 9. Link SwiftBar plugin ──
 echo ""
 
-# Try to detect SwiftBar plugin directory
+# Remove old plugin versions
+rm -f "$DASHBOARD_DIR/claude-tokens.30s.py"
+rm -f "$DASHBOARD_DIR/claude-tokens.5s.py"
+
 SWIFTBAR_DIR=$(defaults read com.ameba.SwiftBar PluginDirectory 2>/dev/null || echo "")
 
 if [ -z "$SWIFTBAR_DIR" ]; then
-    SWIFTBAR_DIR="$DASHBOARD_DIR"
-    echo "  ⚠️  SwiftBar plugin directory not detected."
-    echo "     When you first open SwiftBar, set the plugin directory to:"
-    echo ""
-    echo "     📂 $DASHBOARD_DIR"
-    echo ""
+    defaults write com.ameba.SwiftBar PluginDirectory -string "$DASHBOARD_DIR"
+    echo "  ✅ SwiftBar plugin directory set to: $DASHBOARD_DIR"
 else
-    # Symlink plugin to SwiftBar's directory
     SWIFTBAR_DIR=$(eval echo "$SWIFTBAR_DIR")
     if [ "$SWIFTBAR_DIR" != "$DASHBOARD_DIR" ]; then
-        ln -sf "$DASHBOARD_DIR/claude-tokens.30s.py" "$SWIFTBAR_DIR/claude-tokens.30s.py"
+        rm -f "$SWIFTBAR_DIR/claude-tokens.30s.py"
+        rm -f "$SWIFTBAR_DIR/claude-tokens.5s.py"
+        ln -sf "$DASHBOARD_DIR/claude-tokens.1s.py" "$SWIFTBAR_DIR/claude-tokens.1s.py"
         echo "  ✅ Plugin linked to SwiftBar: $SWIFTBAR_DIR"
     else
-        echo "  ✅ Plugin already in SwiftBar directory"
+        echo "  ✅ Plugin in SwiftBar directory"
     fi
 fi
 
@@ -156,11 +159,9 @@ echo "  ────────────────────────
 echo "  ✅ Installation complete!"
 echo ""
 echo "  Next steps:"
-echo "  1. Open SwiftBar (if not running)"
-echo "  2. Edit token limits:  open $DASHBOARD_DIR/config.json"
-echo "  3. Start using Claude Code — usage will be tracked automatically"
+echo "  1. Open SwiftBar (or restart it)"
+echo "  2. Token usage will be tracked automatically"
 echo ""
-echo "  Config options:"
-echo "    tokenLimit         — your plan's token limit per window"
-echo "    resetIntervalHours — hours until token limit resets"
+echo "  Config: $DASHBOARD_DIR/config.json"
+echo "  Adjust tokenLimit or windowHours if needed."
 echo ""
