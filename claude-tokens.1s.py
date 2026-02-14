@@ -15,25 +15,23 @@ CONFIG_FILE = DASHBOARD_DIR / "config.json"
 USAGE_FILE = DASHBOARD_DIR / "usage.json"
 RESET_SCRIPT = DASHBOARD_DIR / "reset-usage.py"
 
-# Plan limits — from Claude-Code-Usage-Monitor reference
+# Plan limits — cost & message limits are the real rate-limit metrics.
+# Token counts are shown as info only (no hard limit, varies by model mix).
 PLAN_PRESETS = {
     "pro": {
         "name": "Pro",
-        "tokenLimit": 19_000,
         "costLimit": 18.0,
         "messageLimit": 250,
         "windowHours": 5,
     },
     "max5": {
         "name": "Max 5x",
-        "tokenLimit": 88_000,
         "costLimit": 35.0,
         "messageLimit": 1_000,
         "windowHours": 5,
     },
     "max20": {
         "name": "Max 20x",
-        "tokenLimit": 220_000,
         "costLimit": 140.0,
         "messageLimit": 2_000,
         "windowHours": 5,
@@ -41,14 +39,12 @@ PLAN_PRESETS = {
     # Backward compatibility aliases
     "max_5x": {
         "name": "Max 5x",
-        "tokenLimit": 88_000,
         "costLimit": 35.0,
         "messageLimit": 1_000,
         "windowHours": 5,
     },
     "max_20x": {
         "name": "Max 20x",
-        "tokenLimit": 220_000,
         "costLimit": 140.0,
         "messageLimit": 2_000,
         "windowHours": 5,
@@ -134,7 +130,6 @@ def main():
     preset = PLAN_PRESETS.get(plan_key, PLAN_PRESETS["pro"])
 
     # Allow config overrides
-    token_limit = config.get("tokenLimit", preset["tokenLimit"])
     cost_limit = config.get("costLimit", preset["costLimit"])
     message_limit = config.get("messageLimit", preset["messageLimit"])
     window_hours = config.get("windowHours", preset["windowHours"])
@@ -171,17 +166,15 @@ def main():
     cost_used = sum(e["cost_usd"] for e in active)
     messages_used = len(active)
 
-    remaining_tokens = max(0, token_limit - tokens_used)
     remaining_cost = max(0, cost_limit - cost_used)
 
-    pct_tokens = (tokens_used / token_limit * 100) if token_limit > 0 else 0
     pct_cost = (cost_used / cost_limit * 100) if cost_limit > 0 else 0
     pct_messages = (
         (messages_used / message_limit * 100) if message_limit > 0 else 0
     )
 
-    # Primary metric: whichever is highest percentage
-    pct_max = max(pct_tokens, pct_cost, pct_messages)
+    # Primary metric: whichever is highest percentage (cost or messages)
+    pct_max = max(pct_cost, pct_messages)
 
     # ── Next recharge: when the oldest entry in the window expires ──
     if active:
@@ -245,7 +238,7 @@ def main():
     print(f"{bar} {pct_max:.1f}% | font=Menlo size=11")
     print("---")
 
-    # Cost stats
+    # Cost stats (primary limit)
     cost_color = (
         "#FF4444"
         if pct_cost >= 90
@@ -256,19 +249,7 @@ def main():
         f"({pct_cost:.1f}%) | font=Menlo size=12 color={cost_color}"
     )
 
-    # Token stats
-    tok_color = (
-        "#FF4444"
-        if pct_tokens >= 90
-        else ("#FFAA00" if pct_tokens >= 70 else "#44FF44")
-    )
-    print(
-        f"Tokens:   {format_tokens(tokens_used):>8} / "
-        f"{format_tokens(token_limit):<8} "
-        f"({pct_tokens:.1f}%) | font=Menlo size=12 color={tok_color}"
-    )
-
-    # Message stats
+    # Message stats (secondary limit)
     msg_color = (
         "#FF4444"
         if pct_messages >= 90
@@ -277,6 +258,12 @@ def main():
     print(
         f"Messages: {messages_used:>8} / {message_limit:<8} "
         f"({pct_messages:.1f}%) | font=Menlo size=12 color={msg_color}"
+    )
+
+    # Token stats (info only — no hard limit, varies by model)
+    print(
+        f"Tokens:   {format_tokens(tokens_used):>8} used"
+        f" | font=Menlo size=12 color=#AAAAAA"
     )
 
     print("---")
