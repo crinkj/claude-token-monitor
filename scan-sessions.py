@@ -3,20 +3,39 @@
 
 Reads all session JSONL files and extracts assistant message usage data
 from the last N hours (matching the configured rolling window).
+Calculates USD cost per model and deduplicates by message_id + request_id.
 """
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
 DASHBOARD_DIR = Path.home() / ".claude" / "dashboard"
 CONFIG_FILE = DASHBOARD_DIR / "config.json"
 USAGE_FILE = DASHBOARD_DIR / "usage.json"
 
-PLAN_PRESETS = {
-    "pro": {"windowHours": 5},
-    "max_5x": {"windowHours": 5},
-    "max_20x": {"windowHours": 5},
+WINDOW_HOURS = 5
+
+# Pricing per million tokens (USD) — from Anthropic pricing page
+MODEL_PRICING = {
+    "opus": {
+        "input": 15.0,
+        "output": 75.0,
+        "cache_creation": 18.75,
+        "cache_read": 1.5,
+    },
+    "sonnet": {
+        "input": 3.0,
+        "output": 15.0,
+        "cache_creation": 3.75,
+        "cache_read": 0.3,
+    },
+    "haiku": {
+        "input": 0.25,
+        "output": 1.25,
+        "cache_creation": 0.3,
+        "cache_read": 0.03,
+    },
 }
 
 
@@ -38,7 +57,7 @@ def parse_timestamp(ts_str):
     """Parse ISO timestamp, handling both UTC 'Z' suffix and local times."""
     if ts_str.endswith("Z"):
         utc_dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-        return utc_dt.astimezone().replace(tzinfo=None)  # convert to local
+        return utc_dt.astimezone().replace(tzinfo=None)
     try:
         dt = datetime.fromisoformat(ts_str)
         if dt.tzinfo is not None:
@@ -46,6 +65,47 @@ def parse_timestamp(ts_str):
         return dt
     except ValueError:
         return None
+
+
+def get_model_tier(model_name):
+    """Map model name to pricing tier (opus/sonnet/haiku)."""
+    if not model_name:
+        return "sonnet"
+    m = model_name.lower()
+    if "opus" in m:
+        return "opus"
+    if "haiku" in m:
+        return "haiku"
+    return "sonnet"
+
+
+def extract_model(data):
+    """Extract model name from message data (checks multiple paths)."""
+    msg = data.get("message", {})
+    if isinstance(msg, dict):
+        model = msg.get("model")
+        if model:
+            return model
+    for key in ("model", "Model"):
+        if data.get(key):
+            return data[key]
+    usage = data.get("usage", {})
+    if isinstance(usage, dict) and usage.get("model"):
+        return usage["model"]
+    return "unknown"
+
+
+def calculate_cost(model, input_tokens, output_tokens, cache_creation, cache_read):
+    """Calculate USD cost based on model pricing."""
+    tier = get_model_tier(model)
+    pricing = MODEL_PRICING.get(tier, MODEL_PRICING["sonnet"])
+    cost = (
+        (input_tokens / 1_000_000) * pricing["input"]
+        + (output_tokens / 1_000_000) * pricing["output"]
+        + (cache_creation / 1_000_000) * pricing["cache_creation"]
+        + (cache_read / 1_000_000) * pricing["cache_read"]
+    )
+    return round(cost, 6)
 
 
 def scan_all_sessions(window_hours):
@@ -57,6 +117,7 @@ def scan_all_sessions(window_hours):
     cutoff = datetime.now() - timedelta(hours=window_hours)
     entries = []
     session_lines = {}
+    seen_hashes = set()
 
     for project_dir in projects_dir.iterdir():
         if not project_dir.is_dir():
@@ -79,20 +140,59 @@ def scan_all_sessions(window_hours):
                             if not usage or not ts_str:
                                 continue
 
+                            # Deduplication via message_id + request_id
+                            msg_id = d.get("message_id") or (
+                                msg.get("id") if isinstance(msg, dict) else ""
+                            )
+                            req_id = d.get("request_id") or d.get(
+                                "requestId", ""
+                            )
+                            if msg_id and req_id:
+                                h = f"{msg_id}:{req_id}"
+                                if h in seen_hashes:
+                                    continue
+                                seen_hashes.add(h)
+
                             ts = parse_timestamp(ts_str)
                             if ts is None or ts < cutoff:
                                 continue
 
-                            tokens = (
-                                usage.get("input_tokens", 0)
-                                + usage.get("output_tokens", 0)
-                                + usage.get("cache_creation_input_tokens", 0)
+                            input_tokens = usage.get("input_tokens", 0)
+                            output_tokens = usage.get("output_tokens", 0)
+                            cache_creation = usage.get(
+                                "cache_creation_input_tokens", 0
                             )
-                            if tokens > 0:
-                                entries.append({
-                                    "timestamp": ts.isoformat(),
-                                    "tokens": tokens,
-                                })
+                            cache_read = usage.get(
+                                "cache_read_input_tokens", 0
+                            )
+                            total = (
+                                input_tokens
+                                + output_tokens
+                                + cache_creation
+                                + cache_read
+                            )
+
+                            if total > 0:
+                                model = extract_model(d)
+                                cost = calculate_cost(
+                                    model,
+                                    input_tokens,
+                                    output_tokens,
+                                    cache_creation,
+                                    cache_read,
+                                )
+                                entries.append(
+                                    {
+                                        "timestamp": ts.isoformat(),
+                                        "input_tokens": input_tokens,
+                                        "output_tokens": output_tokens,
+                                        "cache_creation_tokens": cache_creation,
+                                        "cache_read_tokens": cache_read,
+                                        "total_tokens": total,
+                                        "model": model,
+                                        "cost_usd": cost,
+                                    }
+                                )
                         except (json.JSONDecodeError, KeyError, ValueError):
                             continue
             except OSError:
@@ -106,14 +206,13 @@ def scan_all_sessions(window_hours):
 
 def main():
     config = load_json(CONFIG_FILE, {"plan": "pro"})
-    plan_key = config.get("plan", "pro")
-    preset = PLAN_PRESETS.get(plan_key, PLAN_PRESETS["pro"])
-    window_hours = config.get("windowHours", preset["windowHours"])
+    window_hours = config.get("windowHours", WINDOW_HOURS)
 
     print(f"  Scanning sessions (last {window_hours}h)...")
     entries, session_lines = scan_all_sessions(window_hours)
 
-    total_tokens = sum(e["tokens"] for e in entries)
+    total_tokens = sum(e.get("total_tokens", 0) for e in entries)
+    total_cost = sum(e.get("cost_usd", 0) for e in entries)
 
     usage = {
         "tokenLog": entries,
@@ -121,7 +220,10 @@ def main():
     }
     save_json(USAGE_FILE, usage)
 
-    print(f"  Found {len(entries)} interactions, {total_tokens:,} tokens")
+    print(
+        f"  Found {len(entries)} interactions, "
+        f"{total_tokens:,} tokens, ${total_cost:.2f} cost"
+    )
 
 
 if __name__ == "__main__":

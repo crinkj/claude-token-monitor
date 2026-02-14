@@ -1,13 +1,13 @@
 #!/bin/bash
 set -e
 
-# ─── Claude Code Token Monitor v3 ─── Installer ───
+# ─── Claude Code Token Monitor v4 ─── Installer ───
 #
 # Usage:
 #   curl install:  curl -fsSL https://raw.githubusercontent.com/crinkj/claude-token-monitor/main/install.sh | bash
 #   with plan:     curl -fsSL ... | bash -s -- --plan pro
 #   local install: ./install.sh
-#   local + plan:  ./install.sh --plan max_5x
+#   local + plan:  ./install.sh --plan max5
 
 REPO_RAW="https://raw.githubusercontent.com/crinkj/claude-token-monitor/main"
 DASHBOARD_DIR="$HOME/.claude/dashboard"
@@ -22,14 +22,16 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --plan|-p) PLAN="$2"; shift 2 ;;
         pro)       PLAN="pro"; shift ;;
-        max_5x)    PLAN="max_5x"; shift ;;
-        max_20x)   PLAN="max_20x"; shift ;;
+        max5)      PLAN="max5"; shift ;;
+        max20)     PLAN="max20"; shift ;;
+        max_5x)    PLAN="max5"; shift ;;
+        max_20x)   PLAN="max20"; shift ;;
         *)         shift ;;
     esac
 done
 
 echo ""
-echo "  ⚡ Claude Code Token Monitor — Installer"
+echo "  ⚡ Claude Code Token Monitor v4 — Installer"
 echo "  ──────────────────────────────────────────"
 echo ""
 
@@ -65,22 +67,22 @@ if [ -z "$PLAN" ]; then
     echo ""
     echo "  Select your Claude plan:"
     echo ""
-    echo "    1) Pro"
-    echo "    2) Max 5x"
-    echo "    3) Max 20x"
+    echo "    1) Pro      — 19K tokens / \$18 cost / 250 msgs per 5h"
+    echo "    2) Max 5x   — 88K tokens / \$35 cost / 1K msgs per 5h"
+    echo "    3) Max 20x  — 220K tokens / \$140 cost / 2K msgs per 5h"
     echo ""
     read -p "  Enter choice (1-3): " plan_choice < /dev/tty
 
     case $plan_choice in
-        2) PLAN="max_5x" ;;
-        3) PLAN="max_20x" ;;
+        2) PLAN="max5" ;;
+        3) PLAN="max20" ;;
         *) PLAN="pro" ;;
     esac
 fi
 
 case $PLAN in
-    max_5x)  PLAN_NAME="Max 5x" ;;
-    max_20x) PLAN_NAME="Max 20x" ;;
+    max5)    PLAN_NAME="Max 5x" ;;
+    max20)   PLAN_NAME="Max 20x" ;;
     *)       PLAN="pro"; PLAN_NAME="Pro" ;;
 esac
 echo "  ✅ Plan: $PLAN_NAME"
@@ -208,5 +210,5 @@ echo "  ────────────────────────
 echo "  ✅ Installation complete!"
 echo ""
 echo "  Config: $DASHBOARD_DIR/config.json"
-echo "  Adjust tokenLimit or windowHours if needed."
+echo "  Adjust costLimit, tokenLimit, or windowHours if needed."
 echo ""
