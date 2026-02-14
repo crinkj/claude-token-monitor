@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 
 # <xbar.title>Claude Code Token Monitor</xbar.title>
-# <xbar.version>v4.0</xbar.version>
-# <xbar.desc>Accurate cost & token tracker with per-second countdown</xbar.desc>
+# <xbar.version>v4.1</xbar.version>
+# <xbar.desc>Accurate token tracker with per-second countdown</xbar.desc>
 # <xbar.dependencies>python3</xbar.dependencies>
 
 import json
@@ -15,8 +15,8 @@ CONFIG_FILE = DASHBOARD_DIR / "config.json"
 USAGE_FILE = DASHBOARD_DIR / "usage.json"
 RESET_SCRIPT = DASHBOARD_DIR / "reset-usage.py"
 
-# Plan limits — cost & message limits are the real rate-limit metrics.
-# Token counts are shown as info only (no hard limit, varies by model mix).
+# Plan limits — cost limit is the real rate-limit basis.
+# Token limit is dynamically calculated from cost limit + actual model mix.
 PLAN_PRESETS = {
     "pro": {
         "name": "Pro",
@@ -36,7 +36,6 @@ PLAN_PRESETS = {
         "messageLimit": 2_000,
         "windowHours": 5,
     },
-    # Backward compatibility aliases
     "max_5x": {
         "name": "Max 5x",
         "costLimit": 35.0,
@@ -50,6 +49,10 @@ PLAN_PRESETS = {
         "windowHours": 5,
     },
 }
+
+# Default cost per token (Sonnet pricing) used when no usage data yet
+# Sonnet: $3/M input, $15/M output — blended ~$5/M assuming 4:1 ratio
+DEFAULT_COST_PER_TOKEN = 5.0 / 1_000_000
 
 
 def load_json(path, default):
@@ -83,7 +86,6 @@ def make_progress_bar(pct, width=20):
 
 
 def fmt_countdown(seconds):
-    """Full format: Xh XXm XXs."""
     if seconds <= 0:
         return "0s"
     h = seconds // 3600
@@ -97,7 +99,6 @@ def fmt_countdown(seconds):
 
 
 def fmt_countdown_short(seconds):
-    """Short format for menu bar."""
     if seconds <= 0:
         return "0s"
     h = seconds // 3600
@@ -111,7 +112,6 @@ def fmt_countdown_short(seconds):
 
 
 def get_tier_name(model):
-    """Map model name to display tier."""
     if not model:
         return "Sonnet"
     m = model.lower()
@@ -129,7 +129,6 @@ def main():
     plan_key = config.get("plan", "pro")
     preset = PLAN_PRESETS.get(plan_key, PLAN_PRESETS["pro"])
 
-    # Allow config overrides
     cost_limit = config.get("costLimit", preset["costLimit"])
     message_limit = config.get("messageLimit", preset["messageLimit"])
     window_hours = config.get("windowHours", preset["windowHours"])
@@ -137,7 +136,7 @@ def main():
     now = datetime.now()
     window_start = now - timedelta(hours=window_hours)
 
-    # ── Rolling window calculation ──
+    # ── Rolling window ──
     token_log = usage.get("tokenLog", [])
 
     active = []
@@ -145,7 +144,6 @@ def main():
         try:
             ts = datetime.fromisoformat(entry["timestamp"])
             if ts > window_start:
-                # Support both old format (tokens) and new format (total_tokens)
                 total_tokens = entry.get(
                     "total_tokens", entry.get("tokens", 0)
                 )
@@ -166,17 +164,24 @@ def main():
     cost_used = sum(e["cost_usd"] for e in active)
     messages_used = len(active)
 
-    remaining_cost = max(0, cost_limit - cost_used)
+    # ── Dynamic token limit from cost limit + actual model mix ──
+    if tokens_used > 0 and cost_used > 0:
+        cost_per_token = cost_used / tokens_used
+    else:
+        cost_per_token = DEFAULT_COST_PER_TOKEN
 
+    token_limit = int(cost_limit / cost_per_token)
+    remaining_tokens = max(0, token_limit - tokens_used)
+
+    pct_tokens = (tokens_used / token_limit * 100) if token_limit > 0 else 0
     pct_cost = (cost_used / cost_limit * 100) if cost_limit > 0 else 0
     pct_messages = (
         (messages_used / message_limit * 100) if message_limit > 0 else 0
     )
 
-    # Primary metric: whichever is highest percentage (cost or messages)
-    pct_max = max(pct_cost, pct_messages)
+    pct_max = max(pct_tokens, pct_cost, pct_messages)
 
-    # ── Next recharge: when the oldest entry in the window expires ──
+    # ── Next recharge ──
     if active:
         active_sorted = sorted(active, key=lambda e: e["ts"])
         oldest_ts = active_sorted[0]["ts"]
@@ -184,14 +189,12 @@ def main():
         recharge_seconds = max(
             0, int((next_recharge_at - now).total_seconds())
         )
-        recharge_cost = active_sorted[0]["cost_usd"]
         recharge_tokens = active_sorted[0]["total_tokens"]
     else:
         recharge_seconds = 0
-        recharge_cost = 0
         recharge_tokens = 0
 
-    # ── Full window clear: when ALL active entries have expired ──
+    # ── Full window clear ──
     if active:
         newest_ts = max(e["ts"] for e in active)
         full_clear_at = newest_ts + timedelta(hours=window_hours)
@@ -201,7 +204,7 @@ def main():
     else:
         full_clear_seconds = 0
 
-    # ── Icon & color based on highest usage % ──
+    # ── Icon & color ──
     if pct_max >= 90:
         icon = "\u26a0\ufe0f"
         color = "#FF4444"
@@ -212,44 +215,55 @@ def main():
         icon = "\u26a1"
         color = "#44FF44"
 
-    cost_fmt = format_cost(cost_used)
-    cost_limit_fmt = format_cost(cost_limit)
+    used_fmt = format_tokens(tokens_used)
+    limit_fmt = format_tokens(token_limit)
 
-    # ── Menu Bar: show cost (most accurate metric) ──
+    # ── Menu Bar: tokens ──
     if recharge_seconds > 0:
         countdown = fmt_countdown_short(recharge_seconds)
         print(
-            f"{icon} {cost_fmt}/{cost_limit_fmt} "
+            f"{icon} {used_fmt}/{limit_fmt} "
             f"\u00b7 \u23f1 {countdown} | size=13"
         )
     else:
-        print(f"{icon} {cost_fmt}/{cost_limit_fmt} | size=13")
+        print(f"{icon} {used_fmt}/{limit_fmt} | size=13")
 
     # ── Dropdown ──
     print("---")
     plan_name = preset["name"]
     print(
-        f"Claude Code Monitor v4.0 \u00b7 {plan_name} "
+        f"Claude Code Monitor \u00b7 {plan_name} "
         f"| size=13 color=#888888"
     )
     print("---")
 
-    bar = make_progress_bar(pct_max)
-    print(f"{bar} {pct_max:.1f}% | font=Menlo size=11")
+    bar = make_progress_bar(pct_tokens)
+    print(f"{bar} {pct_tokens:.1f}% | font=Menlo size=11")
     print("---")
 
-    # Cost stats (primary limit)
+    # Token stats
+    tok_color = (
+        "#FF4444"
+        if pct_tokens >= 90
+        else ("#FFAA00" if pct_tokens >= 70 else "#44FF44")
+    )
+    print(
+        f"Tokens:   {used_fmt:>8} / {limit_fmt:<8} "
+        f"({pct_tokens:.1f}%) | font=Menlo size=12 color={tok_color}"
+    )
+
+    # Cost stats
     cost_color = (
         "#FF4444"
         if pct_cost >= 90
         else ("#FFAA00" if pct_cost >= 70 else "#44FF44")
     )
     print(
-        f"Cost:     {cost_fmt:>8} / {cost_limit_fmt:<8} "
+        f"Cost:     {format_cost(cost_used):>8} / {format_cost(cost_limit):<8} "
         f"({pct_cost:.1f}%) | font=Menlo size=12 color={cost_color}"
     )
 
-    # Message stats (secondary limit)
+    # Message stats
     msg_color = (
         "#FF4444"
         if pct_messages >= 90
@@ -258,12 +272,6 @@ def main():
     print(
         f"Messages: {messages_used:>8} / {message_limit:<8} "
         f"({pct_messages:.1f}%) | font=Menlo size=12 color={msg_color}"
-    )
-
-    # Token stats (info only — no hard limit, varies by model)
-    print(
-        f"Tokens:   {format_tokens(tokens_used):>8} used"
-        f" | font=Menlo size=12 color=#AAAAAA"
     )
 
     print("---")
@@ -291,8 +299,7 @@ def main():
     # Recharge info
     if recharge_seconds > 0:
         print(
-            f"\u23f1  Next +{format_cost(recharge_cost)} "
-            f"(+{format_tokens(recharge_tokens)}) in "
+            f"\u23f1  Next +{format_tokens(recharge_tokens)} in "
             f"{fmt_countdown(recharge_seconds)} | color=#66CCFF"
         )
     else:
@@ -309,11 +316,9 @@ def main():
 
     print("---")
 
-    # Window info
     print(f"   Rolling window: {window_hours}h | size=11 color=#888888")
     print("---")
 
-    # Actions
     print(
         f"\U0001f5d1  Reset Counter"
         f" | bash={RESET_SCRIPT} terminal=false refresh=true"
