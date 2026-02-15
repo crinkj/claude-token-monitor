@@ -85,31 +85,6 @@ def make_progress_bar(pct, width=20):
     return "\u2588" * filled + "\u2591" * empty
 
 
-def fmt_countdown(seconds):
-    if seconds <= 0:
-        return "0s"
-    h = seconds // 3600
-    m = (seconds % 3600) // 60
-    s = seconds % 60
-    if h > 0:
-        return f"{h}h {m:02d}m {s:02d}s"
-    elif m > 0:
-        return f"{m}m {s:02d}s"
-    return f"{s}s"
-
-
-def fmt_countdown_short(seconds):
-    if seconds <= 0:
-        return "0s"
-    h = seconds // 3600
-    m = (seconds % 3600) // 60
-    s = seconds % 60
-    if h > 0:
-        return f"{h}h{m:02d}m{s:02d}s"
-    elif m > 0:
-        return f"{m}m{s:02d}s"
-    return f"{s}s"
-
 
 def get_tier_name(model):
     if not model:
@@ -181,29 +156,6 @@ def main():
 
     pct_max = max(pct_tokens, pct_cost, pct_messages)
 
-    # ── Next recharge ──
-    if active:
-        active_sorted = sorted(active, key=lambda e: e["ts"])
-        oldest_ts = active_sorted[0]["ts"]
-        next_recharge_at = oldest_ts + timedelta(hours=window_hours)
-        recharge_seconds = max(
-            0, int((next_recharge_at - now).total_seconds())
-        )
-        recharge_tokens = active_sorted[0]["total_tokens"]
-    else:
-        recharge_seconds = 0
-        recharge_tokens = 0
-
-    # ── Full window clear ──
-    if active:
-        newest_ts = max(e["ts"] for e in active)
-        full_clear_at = newest_ts + timedelta(hours=window_hours)
-        full_clear_seconds = max(
-            0, int((full_clear_at - now).total_seconds())
-        )
-    else:
-        full_clear_seconds = 0
-
     # ── Icon & color ──
     if pct_max >= 90:
         icon = "\u26a0\ufe0f"
@@ -219,14 +171,7 @@ def main():
     limit_fmt = format_tokens(token_limit)
 
     # ── Menu Bar: tokens ──
-    if recharge_seconds > 0:
-        countdown = fmt_countdown_short(recharge_seconds)
-        print(
-            f"{icon} {used_fmt}/{limit_fmt} "
-            f"\u00b7 \u23f1 {countdown} | size=13"
-        )
-    else:
-        print(f"{icon} {used_fmt}/{limit_fmt} | size=13")
+    print(f"{icon} {used_fmt}/{limit_fmt} | size=13")
 
     # ── Dropdown ──
     print("---")
@@ -295,24 +240,6 @@ def main():
                 f"| font=Menlo size=11 color=#AAAAAA"
             )
         print("---")
-
-    # Recharge info
-    if recharge_seconds > 0:
-        print(
-            f"\u23f1  Next +{format_tokens(recharge_tokens)} in "
-            f"{fmt_countdown(recharge_seconds)} | color=#66CCFF"
-        )
-    else:
-        print(
-            "\u2705  No active usage \u2014 fully recharged "
-            "| color=#44FF44"
-        )
-
-    if full_clear_seconds > 0:
-        print(
-            f"\U0001f504  Full recharge in "
-            f"{fmt_countdown(full_clear_seconds)} | color=#888888 size=11"
-        )
 
     print("---")
 
