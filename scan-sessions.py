@@ -208,7 +208,6 @@ def main():
     config = load_json(CONFIG_FILE, {"plan": "pro"})
     window_hours = config.get("windowHours", WINDOW_HOURS)
 
-    print(f"  Scanning sessions (last {window_hours}h)...")
     entries, session_lines = scan_all_sessions(window_hours)
 
     total_tokens = sum(e.get("total_tokens", 0) for e in entries)
@@ -220,10 +219,6 @@ def main():
     }
     save_json(USAGE_FILE, usage)
 
-    print(
-        f"  Found {len(entries)} interactions, "
-        f"{total_tokens:,} tokens, ${total_cost:.2f} cost"
-    )
 
 
 if __name__ == "__main__":
